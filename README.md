@@ -8,4 +8,3 @@ Focus Face Poker Site Project
 
 1. 포커 플레잉
 기본적인 포커 플레이들에 대한 지원. 텍사스 홀덤만을 우선 지원할 예정이다.
-

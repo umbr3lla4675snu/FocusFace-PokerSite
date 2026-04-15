@@ -2,6 +2,8 @@
 
 Focus Face Poker 실시간 게임 서버 뼈대 코드입니다.
 
+아키텍처 문서: [BACKEND_ARCHITECTURE.md](BACKEND_ARCHITECTURE.md)
+
 ## 포함 범위 (현재)
 - Socket.IO 기반 테이블 입장/퇴장
 - Ready 후 핸드 시작 (preflop 스켈레톤)
