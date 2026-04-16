@@ -8,3 +8,27 @@ Focus Face Poker Site Project
 
 1. 포커 플레잉
 기본적인 포커 플레이들에 대한 지원. 텍사스 홀덤만을 우선 지원할 예정이다.
+
+2. 실시간 테이블 동기화(진행 중)
+Socket.IO 기반으로 플레이어 입장, Ready, 액션(fold/check/call), 테이블 상태 브로드캐스트를 처리한다.
+
+3. 간단한 웹 클라이언트
+브라우저에서 바로 열 수 있는 단일 HTML 클라이언트로 서버 연결, 테이블 입장, 액션 전송, 로그 확인이 가능하다.
+
+현재 구현 상태
+------------
+
+- 프론트엔드(`poker.html`)
+	- 포커 테이블 UI, 내 카드/커뮤니티 카드 표시 영역
+	- 서버 URL, 테이블 ID, 유저 정보 입력 후 연결 가능
+	- `연결`, `테이블 입장`, `READY`, `CALL`, `CHECK`, `FOLD` 버튼 동작
+	- `table:state`, `player:private`, `hand:action_applied`, `error:event` 이벤트 수신 및 로그 출력
+- 백엔드(`backend-game-server`)
+	- 실시간 게임 서버 스켈레톤 구성 완료
+	- 테이블 입장/퇴장, Ready 후 preflop 시작 흐름
+	- 액션 처리(fold/check/call) 및 상태 브로드캐스트
+	- 개인 홀카드 별도 전송(player:private)
+- 아직 미구현/고도화 필요
+	- 정식 핸드 평가(승패 판정)
+	- 블라인드/레이즈/사이드팟
+	- 인증(JWT), DB 저장(핸드/액션 로그), 타임아웃 자동 액션

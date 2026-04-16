@@ -131,6 +131,69 @@
             margin-bottom: 10px;
         }
 
+        .debug-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .debug-card {
+            background-color: #0f1720;
+            border: 1px solid #52657a;
+            border-radius: 8px;
+            padding: 8px;
+            box-sizing: border-box;
+            min-height: 80px;
+        }
+
+        .debug-card h4 {
+            margin: 0 0 6px;
+            font-size: 13px;
+            color: #9ecbff;
+        }
+
+        .tiny {
+            font-size: 12px;
+            line-height: 1.45;
+            opacity: 0.95;
+        }
+
+        .player-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+
+        .player-table th,
+        .player-table td {
+            border-bottom: 1px solid #2c3d4f;
+            padding: 4px;
+            text-align: left;
+        }
+
+        .pill {
+            display: inline-block;
+            font-size: 11px;
+            padding: 2px 7px;
+            border-radius: 999px;
+            margin-right: 6px;
+            background-color: #2b3c4d;
+        }
+
+        .raw-json {
+            max-height: 170px;
+            overflow: auto;
+            white-space: pre;
+            font-family: Consolas, monospace;
+            font-size: 11px;
+            background-color: #0b1119;
+            border: 1px solid #3d4f62;
+            border-radius: 8px;
+            padding: 8px;
+            box-sizing: border-box;
+        }
+
         .log {
             width: 100%;
             height: 180px;
@@ -151,6 +214,10 @@
                 width: 100%;
                 height: 260px;
                 border-width: 10px;
+            }
+
+            .debug-grid {
+                grid-template-columns: 1fr;
             }
 
             .card {
@@ -206,7 +273,34 @@
             <button id="btn-fold" class="warn">FOLD</button>
         </div>
 
+        <div class="row">
+            <button id="btn-clear-log" class="secondary">로그 지우기</button>
+            <label class="tiny"><input id="chk-verbose-state" type="checkbox"> table:state 전체 로그</label>
+            <label class="tiny"><input id="chk-autoscroll" type="checkbox" checked> 자동 스크롤</label>
+        </div>
+
         <div class="status" id="status">상태: 미연결</div>
+
+        <div class="debug-grid">
+            <div class="debug-card">
+                <h4>핸드 상태</h4>
+                <div class="tiny" id="hand-summary">스트리트: - | 팟: - | 현재 베팅: - | 현재 턴: -</div>
+                <div class="tiny" id="my-summary">내 좌석: - | 내 스택: -</div>
+            </div>
+            <div class="debug-card">
+                <h4>이벤트 카운터</h4>
+                <div class="tiny" id="event-counters"></div>
+            </div>
+            <div class="debug-card">
+                <h4>플레이어 상태</h4>
+                <div id="player-list" class="tiny">플레이어 없음</div>
+            </div>
+            <div class="debug-card">
+                <h4>Raw table:state</h4>
+                <div id="raw-state" class="raw-json">{}</div>
+            </div>
+        </div>
+
         <div class="log" id="log"></div>
     </div>
 
@@ -224,11 +318,21 @@
         const stackEl = document.getElementById("my-stack");
         const statusEl = document.getElementById("status");
         const logEl = document.getElementById("log");
+        const handSummaryEl = document.getElementById("hand-summary");
+        const mySummaryEl = document.getElementById("my-summary");
+        const eventCountersEl = document.getElementById("event-counters");
+        const rawStateEl = document.getElementById("raw-state");
+        const playerListEl = document.getElementById("player-list");
+        const chkVerboseStateEl = document.getElementById("chk-verbose-state");
+        const chkAutoscrollEl = document.getElementById("chk-autoscroll");
 
         const inputServerUrl = document.getElementById("server-url");
         const inputTableId = document.getElementById("table-id");
         const inputUserId = document.getElementById("user-id");
         const inputNickname = document.getElementById("nickname");
+
+        const eventCount = {};
+        let lastTableState = null;
 
         function suitSymbol(suit) {
             if (suit === "S") return "♠";
@@ -254,12 +358,39 @@
             element.style.border = "1px solid #ccc";
         }
 
-        function appendLog(title, payload) {
+        function renderEventCounters() {
+            const keys = Object.keys(eventCount);
+            if (keys.length === 0) {
+                eventCountersEl.textContent = "이벤트 수신 전";
+                return;
+            }
+
+            eventCountersEl.innerHTML = keys
+                .sort()
+                .map((k) => `<span class="pill">${k}: ${eventCount[k]}</span>`)
+                .join("");
+        }
+
+        function tickEvent(name) {
+            eventCount[name] = (eventCount[name] || 0) + 1;
+            renderEventCounters();
+        }
+
+        function appendLog(title, payload, options = {}) {
+            const skip = options.skip === true;
+            if (skip) {
+                return;
+            }
+
             const time = new Date().toLocaleTimeString();
             const line = `[${time}] ${title}`;
             const body = payload ? `\n${JSON.stringify(payload, null, 2)}` : "";
             logEl.textContent += `${line}${body}\n\n`;
-            logEl.scrollTop = logEl.scrollHeight;
+
+            if (chkAutoscrollEl.checked) {
+                logEl.scrollTop = logEl.scrollHeight;
+            }
+
             console.log(line, payload || "");
         }
 
@@ -272,6 +403,9 @@
                 return;
             }
 
+            lastTableState = state;
+            rawStateEl.textContent = JSON.stringify(state, null, 2);
+
             const me = Array.isArray(state.players)
                 ? state.players.find((p) => p.userId === inputUserId.value.trim())
                 : null;
@@ -279,6 +413,27 @@
             if (me) {
                 mySeatNo = me.seatNo;
                 stackEl.textContent = String(me.stack);
+            }
+
+            mySummaryEl.textContent = `내 좌석: ${mySeatNo ?? "-"} | 내 스택: ${me ? me.stack : "-"}`;
+
+            const hand = state.hand;
+            handSummaryEl.textContent = hand
+                ? `스트리트: ${hand.street} | 팟: ${hand.pot} | 현재 베팅: ${hand.currentBet} | 현재 턴: ${hand.currentTurnSeatNo}`
+                : "스트리트: waiting | 팟: 0 | 현재 베팅: 0 | 현재 턴: -";
+
+            if (Array.isArray(state.players) && state.players.length > 0) {
+                const rows = state.players
+                    .map((p) => {
+                        const meTag = p.userId === inputUserId.value.trim() ? "(ME)" : "";
+                        const turnTag = hand && hand.currentTurnSeatNo === p.seatNo ? " <- TURN" : "";
+                        return `<tr><td>${p.seatNo}${meTag}</td><td>${p.nickname}${turnTag}</td><td>${p.stack}</td><td>${p.contribution}</td><td>${p.isFolded}</td><td>${p.isReady}</td></tr>`;
+                    })
+                    .join("");
+
+                playerListEl.innerHTML = `<table class="player-table"><thead><tr><th>좌석</th><th>닉네임</th><th>스택</th><th>기여</th><th>폴드</th><th>READY</th></tr></thead><tbody>${rows}</tbody></table>`;
+            } else {
+                playerListEl.textContent = "플레이어 없음";
             }
 
             const communityCards = state.hand && Array.isArray(state.hand.communityCards)
@@ -292,29 +447,36 @@
             appendLog("table:state", {
                 hand: state.hand,
                 players: state.players,
+            }, {
+                skip: !chkVerboseStateEl.checked,
             });
         }
 
         function bindSocketEvents() {
             socket.on("connect", () => {
+                tickEvent("connect");
                 setStatus(`연결됨 (${socket.id})`);
                 appendLog("connect", { socketId: socket.id });
             });
 
             socket.on("disconnect", (reason) => {
+                tickEvent("disconnect");
                 setStatus(`연결 종료 (${reason})`);
                 appendLog("disconnect", { reason });
             });
 
             socket.on("system:connected", (payload) => {
+                tickEvent("system:connected");
                 appendLog("system:connected", payload);
             });
 
             socket.on("table:state", (state) => {
+                tickEvent("table:state");
                 renderTableState(state);
             });
 
             socket.on("player:private", (payload) => {
+                tickEvent("player:private");
                 if (!payload || !Array.isArray(payload.holeCards)) {
                     return;
                 }
@@ -327,10 +489,12 @@
             });
 
             socket.on("hand:action_applied", (payload) => {
+                tickEvent("hand:action_applied");
                 appendLog("hand:action_applied", payload);
             });
 
             socket.on("error:event", (payload) => {
+                tickEvent("error:event");
                 appendLog("error:event", payload);
             });
         }
@@ -365,6 +529,11 @@
                 return;
             }
             socket.disconnect();
+        });
+
+        document.getElementById("btn-clear-log").addEventListener("click", () => {
+            logEl.textContent = "";
+            appendLog("system", { message: "로그를 지웠습니다." });
         });
 
         document.getElementById("btn-join").addEventListener("click", () => {
@@ -415,6 +584,7 @@
         appendLog("ready", {
             message: "서버 실행 후 연결 버튼을 누르세요. 탭 2개를 열어 u1/u2로 테스트하면 됩니다.",
         });
+        renderEventCounters();
     </script>
 </body>
 </html>
