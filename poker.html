@@ -9,11 +9,13 @@
             background-color: #2c3e50;
             display: flex;
             flex-direction: column; /* 1. 테이블과 플레이어 영역을 세로로 나열 */
-            justify-content: center;
+            justify-content: flex-start;
             align-items: center;
-            height: 100vh;
+            min-height: 100vh;
+            padding: 24px 16px 32px;
             margin: 0;
             font-family: sans-serif; /* 글꼴 변경 */
+            box-sizing: border-box;
         }
 
         /* 2. 초록색 타원형 포커 테이블 (이제 안에는 커뮤니티 카드만 남음) */
@@ -77,6 +79,90 @@
             font-weight: bold;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.5); /* 입체감 */
         }
+
+        .control-panel {
+            width: 800px;
+            max-width: 100%;
+            background-color: #1f2b38;
+            border: 2px solid #3a4a5c;
+            border-radius: 14px;
+            padding: 14px;
+            color: #ecf0f1;
+            box-sizing: border-box;
+            margin-top: 18px;
+        }
+
+        .row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+
+        .control-panel input {
+            background-color: #0f1720;
+            border: 1px solid #52657a;
+            color: #ecf0f1;
+            border-radius: 8px;
+            padding: 8px 10px;
+            min-width: 130px;
+        }
+
+        .control-panel button {
+            border: none;
+            border-radius: 8px;
+            padding: 8px 12px;
+            background-color: #3498db;
+            color: #fff;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .control-panel button.secondary {
+            background-color: #16a085;
+        }
+
+        .control-panel button.warn {
+            background-color: #c0392b;
+        }
+
+        .status {
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+
+        .log {
+            width: 100%;
+            height: 180px;
+            background-color: #0f1720;
+            border: 1px solid #52657a;
+            color: #ecf0f1;
+            border-radius: 8px;
+            padding: 10px;
+            box-sizing: border-box;
+            overflow-y: auto;
+            font-family: Consolas, monospace;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        @media (max-width: 860px) {
+            .poker-table {
+                width: 100%;
+                height: 260px;
+                border-width: 10px;
+            }
+
+            .card {
+                width: 56px;
+                height: 84px;
+                font-size: 20px;
+            }
+
+            .player-stack {
+                font-size: 26px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -93,17 +179,242 @@
 
     <div class="player-zone">
         <div class="player-cards">
-            <div class="card spade">A♠</div>
-            <div class="card heart">K♥</div>
+            <div class="card" id="my-card-1">?</div>
+            <div class="card" id="my-card-2">?</div>
         </div>
         
-        <div class="player-stack">
+        <div class="player-stack" id="my-stack">
             1500
         </div>
     </div>
 
+    <div class="control-panel">
+        <div class="row">
+            <input id="server-url" type="text" value="http://localhost:4000" placeholder="서버 URL">
+            <input id="table-id" type="text" value="default" placeholder="테이블 ID">
+            <input id="user-id" type="text" value="u1" placeholder="userId">
+            <input id="nickname" type="text" value="player1" placeholder="닉네임">
+        </div>
+
+        <div class="row">
+            <button id="btn-connect">연결</button>
+            <button id="btn-disconnect" class="warn">연결 종료</button>
+            <button id="btn-join" class="secondary">테이블 입장</button>
+            <button id="btn-ready" class="secondary">READY</button>
+            <button id="btn-call">CALL</button>
+            <button id="btn-check">CHECK</button>
+            <button id="btn-fold" class="warn">FOLD</button>
+        </div>
+
+        <div class="status" id="status">상태: 미연결</div>
+        <div class="log" id="log"></div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js" crossorigin="anonymous"></script>
+
     <script>
-        // 다음 단계를 위한 JavaScript 공간 (지금은 비워둡니다)
+        let socket = null;
+        let mySeatNo = null;
+
+        const cardEls = [
+            document.getElementById("my-card-1"),
+            document.getElementById("my-card-2"),
+        ];
+        const communityEls = Array.from(document.querySelectorAll(".community-cards .card"));
+        const stackEl = document.getElementById("my-stack");
+        const statusEl = document.getElementById("status");
+        const logEl = document.getElementById("log");
+
+        const inputServerUrl = document.getElementById("server-url");
+        const inputTableId = document.getElementById("table-id");
+        const inputUserId = document.getElementById("user-id");
+        const inputNickname = document.getElementById("nickname");
+
+        function suitSymbol(suit) {
+            if (suit === "S") return "♠";
+            if (suit === "H") return "♥";
+            if (suit === "D") return "♦";
+            if (suit === "C") return "♣";
+            return "?";
+        }
+
+        function paintCard(element, card) {
+            if (!card) {
+                element.textContent = "?";
+                element.style.color = "#fff";
+                element.style.backgroundColor = "#2980b9";
+                element.style.border = "2px solid white";
+                return;
+            }
+
+            const red = card.suit === "H" || card.suit === "D";
+            element.textContent = card.rank + suitSymbol(card.suit);
+            element.style.color = red ? "#c0392b" : "#111";
+            element.style.backgroundColor = "#fff";
+            element.style.border = "1px solid #ccc";
+        }
+
+        function appendLog(title, payload) {
+            const time = new Date().toLocaleTimeString();
+            const line = `[${time}] ${title}`;
+            const body = payload ? `\n${JSON.stringify(payload, null, 2)}` : "";
+            logEl.textContent += `${line}${body}\n\n`;
+            logEl.scrollTop = logEl.scrollHeight;
+            console.log(line, payload || "");
+        }
+
+        function setStatus(text) {
+            statusEl.textContent = `상태: ${text}`;
+        }
+
+        function renderTableState(state) {
+            if (!state) {
+                return;
+            }
+
+            const me = Array.isArray(state.players)
+                ? state.players.find((p) => p.userId === inputUserId.value.trim())
+                : null;
+
+            if (me) {
+                mySeatNo = me.seatNo;
+                stackEl.textContent = String(me.stack);
+            }
+
+            const communityCards = state.hand && Array.isArray(state.hand.communityCards)
+                ? state.hand.communityCards
+                : [];
+
+            for (let i = 0; i < communityEls.length; i += 1) {
+                paintCard(communityEls[i], communityCards[i]);
+            }
+
+            appendLog("table:state", {
+                hand: state.hand,
+                players: state.players,
+            });
+        }
+
+        function bindSocketEvents() {
+            socket.on("connect", () => {
+                setStatus(`연결됨 (${socket.id})`);
+                appendLog("connect", { socketId: socket.id });
+            });
+
+            socket.on("disconnect", (reason) => {
+                setStatus(`연결 종료 (${reason})`);
+                appendLog("disconnect", { reason });
+            });
+
+            socket.on("system:connected", (payload) => {
+                appendLog("system:connected", payload);
+            });
+
+            socket.on("table:state", (state) => {
+                renderTableState(state);
+            });
+
+            socket.on("player:private", (payload) => {
+                if (!payload || !Array.isArray(payload.holeCards)) {
+                    return;
+                }
+
+                for (let i = 0; i < cardEls.length; i += 1) {
+                    paintCard(cardEls[i], payload.holeCards[i]);
+                }
+
+                appendLog("player:private", payload);
+            });
+
+            socket.on("hand:action_applied", (payload) => {
+                appendLog("hand:action_applied", payload);
+            });
+
+            socket.on("error:event", (payload) => {
+                appendLog("error:event", payload);
+            });
+        }
+
+        function ensureSocket() {
+            if (socket && socket.connected) {
+                return;
+            }
+
+            const serverUrl = inputServerUrl.value.trim();
+            const userId = inputUserId.value.trim();
+            const nickname = inputNickname.value.trim();
+
+            socket = io(serverUrl, {
+                auth: {
+                    userId,
+                    nickname,
+                },
+                transports: ["websocket"],
+            });
+
+            bindSocketEvents();
+            setStatus("연결 시도 중...");
+        }
+
+        document.getElementById("btn-connect").addEventListener("click", () => {
+            ensureSocket();
+        });
+
+        document.getElementById("btn-disconnect").addEventListener("click", () => {
+            if (!socket) {
+                return;
+            }
+            socket.disconnect();
+        });
+
+        document.getElementById("btn-join").addEventListener("click", () => {
+            if (!socket || !socket.connected) {
+                ensureSocket();
+            }
+            const tableId = inputTableId.value.trim();
+            socket.emit("table:join", { tableId });
+            appendLog("emit table:join", { tableId });
+        });
+
+        document.getElementById("btn-ready").addEventListener("click", () => {
+            if (!socket || !socket.connected) {
+                appendLog("warn", { message: "먼저 연결하세요." });
+                return;
+            }
+            socket.emit("player:ready", {});
+            appendLog("emit player:ready");
+        });
+
+        document.getElementById("btn-call").addEventListener("click", () => {
+            if (!socket || !socket.connected) {
+                appendLog("warn", { message: "먼저 연결하세요." });
+                return;
+            }
+            socket.emit("hand:action", { actionType: "call" });
+            appendLog("emit hand:action", { actionType: "call" });
+        });
+
+        document.getElementById("btn-check").addEventListener("click", () => {
+            if (!socket || !socket.connected) {
+                appendLog("warn", { message: "먼저 연결하세요." });
+                return;
+            }
+            socket.emit("hand:action", { actionType: "check" });
+            appendLog("emit hand:action", { actionType: "check" });
+        });
+
+        document.getElementById("btn-fold").addEventListener("click", () => {
+            if (!socket || !socket.connected) {
+                appendLog("warn", { message: "먼저 연결하세요." });
+                return;
+            }
+            socket.emit("hand:action", { actionType: "fold" });
+            appendLog("emit hand:action", { actionType: "fold" });
+        });
+
+        appendLog("ready", {
+            message: "서버 실행 후 연결 버튼을 누르세요. 탭 2개를 열어 u1/u2로 테스트하면 됩니다.",
+        });
     </script>
 </body>
 </html>
