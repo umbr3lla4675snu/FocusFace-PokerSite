@@ -6,8 +6,9 @@ Focus Face Poker 실시간 게임 서버 뼈대 코드입니다.
 
 ## 포함 범위 (현재)
 - Socket.IO 기반 테이블 입장/퇴장
-- Ready 후 핸드 시작 (preflop 스켈레톤)
+- Ready 후 핸드 시작
 - 액션 처리: fold, check, call
+- 스트리트 진행: preflop -> flop -> turn -> river (승패 판정 없이 종료)
 - 테이블 상태 브로드캐스트
 - 개인 홀카드 별도 전송(player:private)
 

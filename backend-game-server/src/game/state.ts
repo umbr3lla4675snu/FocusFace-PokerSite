@@ -2,16 +2,18 @@ import { v4 as uuidv4 } from "uuid";
 import { createDeck, shuffleDeck } from "./deck";
 import {
   ActionType,
+  Card,
   HandState,
   PlayerPrivateState,
   PlayerState,
+  Street,
   PublicTableState,
   TableState,
 } from "./types";
 
 function findNextTurnSeat(players: PlayerState[], fromSeatNo: number): number | null {
   const candidates = players
-    .filter((p) => !p.isFolded && p.stack >= 0)
+    .filter((p) => p.holeCards.length === 2 && !p.isFolded && p.stack >= 0)
     .sort((a, b) => a.seatNo - b.seatNo);
 
   if (candidates.length === 0) {
@@ -27,6 +29,55 @@ function resetRoundActionFlags(players: PlayerState[]): void {
     if (!player.isFolded) {
       player.hasActedThisRound = false;
     }
+  }
+}
+
+function getHandPlayers(players: PlayerState[]): PlayerState[] {
+  return players.filter((player) => player.holeCards.length === 2);
+}
+
+function getActiveHandPlayers(players: PlayerState[]): PlayerState[] {
+  return getHandPlayers(players).filter((player) => !player.isFolded);
+}
+
+function firstActiveSeat(players: PlayerState[]): number | null {
+  const active = getActiveHandPlayers(players)
+    .slice()
+    .sort((a, b) => a.seatNo - b.seatNo);
+
+  return active[0]?.seatNo ?? null;
+}
+
+function dealCommunityCards(deck: Card[], count: number): Card[] {
+  const burn = deck.shift();
+  if (!burn) {
+    throw new Error("Deck underflow while burning card");
+  }
+
+  const cards: Card[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const card = deck.shift();
+    if (!card) {
+      throw new Error("Deck underflow while dealing community cards");
+    }
+    cards.push(card);
+  }
+
+  return cards;
+}
+
+function nextStreet(street: Street): Street | null {
+  switch (street) {
+    case "preflop":
+      return "flop";
+    case "flop":
+      return "turn";
+    case "turn":
+      return "river";
+    case "river":
+      return "showdown";
+    default:
+      return null;
   }
 }
 
@@ -117,13 +168,21 @@ export class TableManager {
     actionType: ActionType
   ): { table: TableState; result: string } {
     const table = this.getTable(tableId);
-    if (!table.hand || table.hand.street !== "preflop") {
-      throw new Error("No active preflop hand");
+    if (
+      !table.hand ||
+      table.hand.street === "waiting" ||
+      table.hand.street === "showdown"
+    ) {
+      throw new Error("No active hand");
     }
 
     const actor = table.players.find((p) => p.userId === userId);
     if (!actor) {
       throw new Error("Player not found");
+    }
+
+    if (actor.holeCards.length !== 2) {
+      throw new Error("Player is not participating in this hand");
     }
 
     if (table.hand.currentTurnSeatNo !== actor.seatNo) {
@@ -166,7 +225,7 @@ export class TableManager {
         throw new Error("Unsupported action");
     }
 
-    const activePlayers = table.players.filter((p) => !p.isFolded);
+    const activePlayers = getActiveHandPlayers(table.players);
 
     if (activePlayers.length === 1) {
       const winner = activePlayers[0];
@@ -180,11 +239,13 @@ export class TableManager {
     const everyoneActed = activePlayers.every((p) => p.hasActedThisRound);
 
     if (everyoneMatched && everyoneActed) {
-      const winner = activePlayers[Math.floor(Math.random() * activePlayers.length)];
-      winner.stack += table.hand.pot;
-      const result = `${winner.nickname} wins at skeleton showdown`;
-      this.finishHand(table);
-      return { table, result };
+      const streetAdvanced = this.advanceStreet(table);
+      if (!streetAdvanced) {
+        this.finishHandWithoutJudging(table, activePlayers);
+        return { table, result: "hand finished without showdown judging" };
+      }
+
+      return { table, result: `street advanced to ${table.hand.street}` };
     }
 
     const nextSeat = findNextTurnSeat(table.players, actor.seatNo);
@@ -267,9 +328,7 @@ export class TableManager {
       }
     }
 
-    const firstTurnSeatNo = readyPlayers
-      .slice()
-      .sort((a, b) => a.seatNo - b.seatNo)[0]?.seatNo;
+    const firstTurnSeatNo = readyPlayers.slice().sort((a, b) => a.seatNo - b.seatNo)[0]?.seatNo;
 
     const hand: HandState = {
       handId: uuidv4(),
@@ -282,6 +341,53 @@ export class TableManager {
     };
 
     table.hand = hand;
+  }
+
+  private advanceStreet(table: TableState): boolean {
+    if (!table.hand) {
+      return false;
+    }
+
+    const next = nextStreet(table.hand.street);
+    if (!next || next === "showdown") {
+      return false;
+    }
+
+    if (next === "flop") {
+      table.hand.communityCards.push(...dealCommunityCards(table.hand.deck, 3));
+    } else {
+      table.hand.communityCards.push(...dealCommunityCards(table.hand.deck, 1));
+    }
+
+    table.hand.street = next;
+    table.hand.currentBet = 0;
+    for (const player of getHandPlayers(table.players)) {
+      player.contribution = 0;
+    }
+    resetRoundActionFlags(getHandPlayers(table.players));
+    table.hand.currentTurnSeatNo = firstActiveSeat(table.players);
+
+    return true;
+  }
+
+  private finishHandWithoutJudging(table: TableState, activePlayers: PlayerState[]): void {
+    if (table.hand && activePlayers.length > 0) {
+      const pot = table.hand.pot;
+      const share = Math.floor(pot / activePlayers.length);
+      const remainder = pot % activePlayers.length;
+
+      for (const player of activePlayers) {
+        player.stack += share;
+      }
+
+      if (remainder > 0) {
+        activePlayers
+          .slice()
+          .sort((a, b) => a.seatNo - b.seatNo)[0].stack += remainder;
+      }
+    }
+
+    this.finishHand(table);
   }
 
   private finishHand(table: TableState): void {

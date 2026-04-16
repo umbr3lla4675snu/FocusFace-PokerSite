@@ -1,4 +1,4 @@
-export type Street = "waiting" | "preflop" | "showdown";
+export type Street = "waiting" | "preflop" | "flop" | "turn" | "river" | "showdown";
 
 export type ActionType = "fold" | "check" | "call";
 
