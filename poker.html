@@ -99,6 +99,16 @@
             margin-bottom: 10px;
         }
 
+        .quick-guide {
+            font-size: 12px;
+            background-color: #0f1720;
+            border: 1px solid #3d4f62;
+            border-radius: 8px;
+            padding: 8px;
+            margin-bottom: 10px;
+            line-height: 1.5;
+        }
+
         .control-panel input {
             background-color: #0f1720;
             border: 1px solid #52657a;
@@ -267,6 +277,7 @@
             <button id="btn-connect">연결</button>
             <button id="btn-disconnect" class="warn">연결 종료</button>
             <button id="btn-join" class="secondary">테이블 입장</button>
+            <button id="btn-leave" class="warn">테이블 퇴장</button>
             <button id="btn-ready" class="secondary">READY</button>
             <button id="btn-call">CALL</button>
             <button id="btn-check">CHECK</button>
@@ -274,9 +285,21 @@
         </div>
 
         <div class="row">
+            <button id="btn-open-u1" class="secondary">테스트 탭 열기 (u1)</button>
+            <button id="btn-open-u2" class="secondary">테스트 탭 열기 (u2)</button>
+            <button id="btn-copy-url">현재 설정 URL 복사</button>
+        </div>
+
+        <div class="row">
             <button id="btn-clear-log" class="secondary">로그 지우기</button>
             <label class="tiny"><input id="chk-verbose-state" type="checkbox"> table:state 전체 로그</label>
             <label class="tiny"><input id="chk-autoscroll" type="checkbox" checked> 자동 스크롤</label>
+            <label class="tiny"><input id="chk-auto-play" type="checkbox"> 내 턴 자동 체크/콜</label>
+        </div>
+
+        <div class="quick-guide">
+            빠른 2인 테스트: 탭 2개를 열고 u1, u2로 각각 접속한 뒤 READY를 누르세요.
+            두 탭에서 내 턴 자동 체크/콜을 켜면 preflop부터 river까지 자동 진행됩니다.
         </div>
 
         <div class="status" id="status">상태: 미연결</div>
@@ -309,6 +332,7 @@
     <script>
         let socket = null;
         let mySeatNo = null;
+        let lastAutoActionKey = "";
 
         const cardEls = [
             document.getElementById("my-card-1"),
@@ -325,6 +349,7 @@
         const playerListEl = document.getElementById("player-list");
         const chkVerboseStateEl = document.getElementById("chk-verbose-state");
         const chkAutoscrollEl = document.getElementById("chk-autoscroll");
+        const chkAutoPlayEl = document.getElementById("chk-auto-play");
 
         const inputServerUrl = document.getElementById("server-url");
         const inputTableId = document.getElementById("table-id");
@@ -333,6 +358,57 @@
 
         const eventCount = {};
         let lastTableState = null;
+
+        function paramsToQueryString(params) {
+            return new URLSearchParams(params).toString();
+        }
+
+        function applyQueryParams() {
+            const qs = new URLSearchParams(window.location.search);
+
+            const serverUrl = qs.get("server");
+            const tableId = qs.get("table");
+            const userId = qs.get("user");
+            const nickname = qs.get("nick");
+
+            if (serverUrl) inputServerUrl.value = serverUrl;
+            if (tableId) inputTableId.value = tableId;
+            if (userId) inputUserId.value = userId;
+            if (nickname) inputNickname.value = nickname;
+
+            const autoPlay = qs.get("autoplay");
+            chkAutoPlayEl.checked = autoPlay === "1";
+
+            const autoConnect = qs.get("autoconnect") === "1";
+            const autoJoin = qs.get("autojoin") === "1";
+            const autoReady = qs.get("autoready") === "1";
+
+            if (!autoConnect) {
+                return;
+            }
+
+            ensureSocket();
+
+            if (autoJoin) {
+                setTimeout(() => {
+                    if (!socket || !socket.connected) {
+                        return;
+                    }
+                    socket.emit("table:join", { tableId: inputTableId.value.trim() });
+                    appendLog("emit table:join (auto)", { tableId: inputTableId.value.trim() });
+
+                    if (autoReady) {
+                        setTimeout(() => {
+                            if (!socket || !socket.connected) {
+                                return;
+                            }
+                            socket.emit("player:ready", {});
+                            appendLog("emit player:ready (auto)");
+                        }, 250);
+                    }
+                }, 250);
+            }
+        }
 
         function suitSymbol(suit) {
             if (suit === "S") return "♠";
@@ -398,6 +474,37 @@
             statusEl.textContent = `상태: ${text}`;
         }
 
+        function maybeAutoPlay(state) {
+            if (!chkAutoPlayEl.checked || !socket || !socket.connected || !state || !state.hand) {
+                return;
+            }
+
+            const hand = state.hand;
+            if (!Array.isArray(state.players) || !hand.currentTurnSeatNo) {
+                return;
+            }
+
+            const me = state.players.find((p) => p.userId === inputUserId.value.trim());
+            if (!me || me.isFolded || me.seatNo !== hand.currentTurnSeatNo) {
+                return;
+            }
+
+            const actionType = me.contribution === hand.currentBet ? "check" : "call";
+            const key = [hand.handId, hand.street, hand.currentTurnSeatNo, me.contribution, hand.currentBet, actionType].join("|");
+            if (key === lastAutoActionKey) {
+                return;
+            }
+            lastAutoActionKey = key;
+
+            setTimeout(() => {
+                if (!socket || !socket.connected) {
+                    return;
+                }
+                socket.emit("hand:action", { actionType });
+                appendLog("emit hand:action (auto)", { actionType });
+            }, 120);
+        }
+
         function renderTableState(state) {
             if (!state) {
                 return;
@@ -450,6 +557,8 @@
             }, {
                 skip: !chkVerboseStateEl.checked,
             });
+
+            maybeAutoPlay(state);
         }
 
         function bindSocketEvents() {
@@ -536,6 +645,16 @@
             appendLog("system", { message: "로그를 지웠습니다." });
         });
 
+        document.getElementById("btn-leave").addEventListener("click", () => {
+            if (!socket || !socket.connected) {
+                appendLog("warn", { message: "먼저 연결하세요." });
+                return;
+            }
+
+            socket.emit("table:leave", {});
+            appendLog("emit table:leave");
+        });
+
         document.getElementById("btn-join").addEventListener("click", () => {
             if (!socket || !socket.connected) {
                 ensureSocket();
@@ -581,10 +700,62 @@
             appendLog("emit hand:action", { actionType: "fold" });
         });
 
+        document.getElementById("btn-open-u1").addEventListener("click", () => {
+            const params = {
+                server: inputServerUrl.value.trim(),
+                table: inputTableId.value.trim(),
+                user: "u1",
+                nick: "player1",
+                autoconnect: "1",
+                autojoin: "1",
+                autoready: "1",
+                autoplay: chkAutoPlayEl.checked ? "1" : "0",
+            };
+            const url = `${window.location.pathname}?${paramsToQueryString(params)}`;
+            window.open(url, "_blank");
+        });
+
+        document.getElementById("btn-open-u2").addEventListener("click", () => {
+            const params = {
+                server: inputServerUrl.value.trim(),
+                table: inputTableId.value.trim(),
+                user: "u2",
+                nick: "player2",
+                autoconnect: "1",
+                autojoin: "1",
+                autoready: "1",
+                autoplay: chkAutoPlayEl.checked ? "1" : "0",
+            };
+            const url = `${window.location.pathname}?${paramsToQueryString(params)}`;
+            window.open(url, "_blank");
+        });
+
+        document.getElementById("btn-copy-url").addEventListener("click", async () => {
+            const params = {
+                server: inputServerUrl.value.trim(),
+                table: inputTableId.value.trim(),
+                user: inputUserId.value.trim(),
+                nick: inputNickname.value.trim(),
+                autoconnect: "1",
+                autojoin: "1",
+                autoready: "0",
+                autoplay: chkAutoPlayEl.checked ? "1" : "0",
+            };
+            const url = `${window.location.origin}${window.location.pathname}?${paramsToQueryString(params)}`;
+
+            try {
+                await navigator.clipboard.writeText(url);
+                appendLog("system", { message: "현재 설정 URL을 클립보드에 복사했습니다.", url });
+            } catch {
+                appendLog("system", { message: "클립보드 복사에 실패했습니다.", url });
+            }
+        });
+
         appendLog("ready", {
             message: "서버 실행 후 연결 버튼을 누르세요. 탭 2개를 열어 u1/u2로 테스트하면 됩니다.",
         });
         renderEventCounters();
+        applyQueryParams();
     </script>
 </body>
 </html>
