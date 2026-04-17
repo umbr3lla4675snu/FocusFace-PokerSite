@@ -1,7 +1,7 @@
 import { Server } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import { TableManager } from "../game/state";
-import { ActionType } from "../game/types";
+import { HandActionInput } from "../game/types";
 import { AuthenticatedSocket } from "./types";
 
 interface InitGatewayInput {
@@ -79,22 +79,23 @@ export function initGateway({ httpServer, corsOrigin, tableManager }: InitGatewa
       }
     });
 
-    socket.on("hand:action", ({ actionType }: { actionType: ActionType }) => {
+    socket.on("hand:action", (payload: HandActionInput) => {
       if (!socket.data.tableId) {
         socket.emit("error:event", { code: "NO_TABLE", message: "Join a table first" });
         return;
       }
 
       try {
-        const { table, result } = tableManager.applyAction(
+        const { table, result, appliedActionType, amount } = tableManager.applyAction(
           socket.data.tableId,
           socket.data.userId,
-          actionType
+          payload
         );
 
         io.to(socket.data.tableId).emit("hand:action_applied", {
           userId: socket.data.userId,
-          actionType,
+          actionType: appliedActionType,
+          amount,
           result,
         });
         io.to(socket.data.tableId).emit("table:state", tableManager.getPublicTableState(table.tableId));
@@ -140,6 +141,26 @@ export function initGateway({ httpServer, corsOrigin, tableManager }: InitGatewa
       }
     });
   });
+
+  setInterval(() => {
+    const timeoutResults = tableManager.processTimeoutActions(Date.now());
+    for (const timeoutResult of timeoutResults) {
+      const { tableId, userId, appliedActionType, amount, result, table } = timeoutResult;
+
+      io.to(tableId).emit("hand:action_applied", {
+        userId,
+        actionType: appliedActionType,
+        amount,
+        result,
+      });
+      io.to(tableId).emit("table:state", tableManager.getPublicTableState(table.tableId));
+
+      for (const player of table.players) {
+        const privateState = tableManager.getPrivateState(table.tableId, player.userId);
+        io.to(player.socketId).emit("player:private", privateState);
+      }
+    }
+  }, 300);
 
   return io;
 }

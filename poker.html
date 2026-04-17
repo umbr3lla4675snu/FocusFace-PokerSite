@@ -109,6 +109,22 @@
             line-height: 1.5;
         }
 
+        .popup-help {
+            display: none;
+            font-size: 12px;
+            background-color: #3a1f1f;
+            border: 1px solid #8e3b3b;
+            border-radius: 8px;
+            padding: 8px;
+            margin-bottom: 10px;
+            line-height: 1.5;
+        }
+
+        .popup-help a {
+            color: #9ecbff;
+            margin-right: 10px;
+        }
+
         .control-panel input {
             background-color: #0f1720;
             border: 1px solid #52657a;
@@ -190,6 +206,22 @@
             margin-right: 6px;
             background-color: #2b3c4d;
         }
+
+        .role-badge {
+            display: inline-block;
+            margin-left: 4px;
+            padding: 1px 6px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-weight: bold;
+            color: #fff;
+            vertical-align: middle;
+        }
+
+        .role-btn { background-color: #8e44ad; }
+        .role-sb { background-color: #16a085; }
+        .role-bb { background-color: #e67e22; }
+        .role-turn { background-color: #c0392b; }
 
         .raw-json {
             max-height: 170px;
@@ -282,11 +314,16 @@
             <button id="btn-call">CALL</button>
             <button id="btn-check">CHECK</button>
             <button id="btn-fold" class="warn">FOLD</button>
+            <input id="raise-amount" type="number" min="1" value="40" style="max-width: 110px;" placeholder="RAISE TO">
+            <button id="btn-raise">RAISE</button>
         </div>
 
         <div class="row">
             <button id="btn-open-u1" class="secondary">테스트 탭 열기 (u1)</button>
             <button id="btn-open-u2" class="secondary">테스트 탭 열기 (u2)</button>
+            <button id="btn-open-u3" class="secondary">테스트 탭 열기 (u3)</button>
+            <button id="btn-open-u4" class="secondary">테스트 탭 열기 (u4)</button>
+            <button id="btn-open-4p">4인 테스트 탭 열기</button>
             <button id="btn-copy-url">현재 설정 URL 복사</button>
         </div>
 
@@ -298,9 +335,11 @@
         </div>
 
         <div class="quick-guide">
-            빠른 2인 테스트: 탭 2개를 열고 u1, u2로 각각 접속한 뒤 READY를 누르세요.
-            두 탭에서 내 턴 자동 체크/콜을 켜면 preflop부터 river까지 자동 진행됩니다.
+            빠른 4인 테스트: 4인 테스트 탭 열기 버튼을 누르고 각 탭이 자동 READY 되게 하세요.
+            table:state에서 BTN/SB/BB, 현재 턴, 사이드팟, 타임아웃이 기대대로 바뀌는지 확인하면 됩니다.
         </div>
+
+        <div id="popup-help" class="popup-help"></div>
 
         <div class="status" id="status">상태: 미연결</div>
 
@@ -308,7 +347,9 @@
             <div class="debug-card">
                 <h4>핸드 상태</h4>
                 <div class="tiny" id="hand-summary">스트리트: - | 팟: - | 현재 베팅: - | 현재 턴: -</div>
+                <div class="tiny" id="action-order-summary">액션 순서 기준: -</div>
                 <div class="tiny" id="my-summary">내 좌석: - | 내 스택: -</div>
+                <div class="tiny" id="sidepot-summary">사이드팟: -</div>
             </div>
             <div class="debug-card">
                 <h4>이벤트 카운터</h4>
@@ -343,10 +384,13 @@
         const statusEl = document.getElementById("status");
         const logEl = document.getElementById("log");
         const handSummaryEl = document.getElementById("hand-summary");
+        const actionOrderSummaryEl = document.getElementById("action-order-summary");
         const mySummaryEl = document.getElementById("my-summary");
+        const sidepotSummaryEl = document.getElementById("sidepot-summary");
         const eventCountersEl = document.getElementById("event-counters");
         const rawStateEl = document.getElementById("raw-state");
         const playerListEl = document.getElementById("player-list");
+        const popupHelpEl = document.getElementById("popup-help");
         const chkVerboseStateEl = document.getElementById("chk-verbose-state");
         const chkAutoscrollEl = document.getElementById("chk-autoscroll");
         const chkAutoPlayEl = document.getElementById("chk-auto-play");
@@ -355,12 +399,47 @@
         const inputTableId = document.getElementById("table-id");
         const inputUserId = document.getElementById("user-id");
         const inputNickname = document.getElementById("nickname");
+        const inputRaiseAmount = document.getElementById("raise-amount");
 
         const eventCount = {};
         let lastTableState = null;
 
         function paramsToQueryString(params) {
             return new URLSearchParams(params).toString();
+        }
+
+        function buildPresetUrl(user, nick) {
+            const params = {
+                server: inputServerUrl.value.trim(),
+                table: inputTableId.value.trim(),
+                user,
+                nick,
+                autoconnect: "1",
+                autojoin: "1",
+                autoready: "1",
+                autoplay: chkAutoPlayEl.checked ? "1" : "0",
+            };
+
+            return `${window.location.pathname}?${paramsToQueryString(params)}`;
+        }
+
+        function hidePopupHelp() {
+            popupHelpEl.style.display = "none";
+            popupHelpEl.innerHTML = "";
+        }
+
+        function showPopupHelp(blockedItems) {
+            if (!Array.isArray(blockedItems) || blockedItems.length === 0) {
+                hidePopupHelp();
+                return;
+            }
+
+            const links = blockedItems
+                .map((item) => `<a href="${item.url}" target="_blank" rel="noopener noreferrer">${item.nick} 열기</a>`)
+                .join("");
+
+            popupHelpEl.style.display = "block";
+            popupHelpEl.innerHTML = `팝업 차단으로 일부 탭이 열리지 않았습니다. 아래 링크를 클릭하거나, 이 사이트의 팝업 허용 후 다시 시도하세요.<br>${links}`;
         }
 
         function applyQueryParams() {
@@ -525,20 +604,47 @@
             mySummaryEl.textContent = `내 좌석: ${mySeatNo ?? "-"} | 내 스택: ${me ? me.stack : "-"}`;
 
             const hand = state.hand;
+            const deadlineText = hand && hand.actionDeadlineAt
+                ? Math.max(0, Math.ceil((hand.actionDeadlineAt - Date.now()) / 1000)) + "s"
+                : "-";
+            const timeoutMsText = hand && hand.actionTimeoutMs ? `${hand.actionTimeoutMs}ms` : "-";
+            const buttonText = state.buttonSeatNo ?? "-";
+            const dealerText = hand && hand.dealerSeatNo ? hand.dealerSeatNo : "-";
+            const sbText = hand && hand.smallBlindSeatNo ? hand.smallBlindSeatNo : "-";
+            const bbText = hand && hand.bigBlindSeatNo ? hand.bigBlindSeatNo : "-";
             handSummaryEl.textContent = hand
-                ? `스트리트: ${hand.street} | 팟: ${hand.pot} | 현재 베팅: ${hand.currentBet} | 현재 턴: ${hand.currentTurnSeatNo}`
-                : "스트리트: waiting | 팟: 0 | 현재 베팅: 0 | 현재 턴: -";
+                ? `스트리트: ${hand.street} | 팟: ${hand.pot} | 현재 베팅: ${hand.currentBet} | 최소 레이즈: ${hand.minRaise} | BTN(table): ${buttonText} | DEALER: ${dealerText} | SB: ${sbText} | BB: ${bbText} | 현재 턴: ${hand.currentTurnSeatNo} | 타임아웃: ${deadlineText} / ${timeoutMsText}`
+                : `스트리트: waiting | 팟: 0 | 현재 베팅: 0 | BTN(table): ${buttonText} | 현재 턴: - | 타임아웃: -`;
+
+            actionOrderSummaryEl.textContent = hand
+                ? (hand.street === "preflop"
+                    ? `액션 순서 기준: 프리플랍은 BB 다음 좌석부터 시작 (헤즈업은 BTN/SB가 먼저)`
+                    : `액션 순서 기준: 포스트플랍은 BTN 다음 좌석부터 시작`)
+                : "액션 순서 기준: -";
+
+            if (hand && Array.isArray(hand.sidePots) && hand.sidePots.length > 0) {
+                sidepotSummaryEl.textContent = "사이드팟: " + hand.sidePots
+                    .map((sp, idx) => `#${idx + 1} ${sp.amount} [${Array.isArray(sp.eligibleSeatNos) ? sp.eligibleSeatNos.join(",") : ""}]`)
+                    .join(" | ");
+            } else {
+                sidepotSummaryEl.textContent = "사이드팟: -";
+            }
 
             if (Array.isArray(state.players) && state.players.length > 0) {
                 const rows = state.players
                     .map((p) => {
                         const meTag = p.userId === inputUserId.value.trim() ? "(ME)" : "";
-                        const turnTag = hand && hand.currentTurnSeatNo === p.seatNo ? " <- TURN" : "";
-                        return `<tr><td>${p.seatNo}${meTag}</td><td>${p.nickname}${turnTag}</td><td>${p.stack}</td><td>${p.contribution}</td><td>${p.isFolded}</td><td>${p.isReady}</td></tr>`;
+                        const roleTags = [];
+                        if (state.buttonSeatNo === p.seatNo) roleTags.push('<span class="role-badge role-btn">BTN</span>');
+                        if (hand && hand.smallBlindSeatNo === p.seatNo) roleTags.push('<span class="role-badge role-sb">SB</span>');
+                        if (hand && hand.bigBlindSeatNo === p.seatNo) roleTags.push('<span class="role-badge role-bb">BB</span>');
+                        if (hand && hand.currentTurnSeatNo === p.seatNo) roleTags.push('<span class="role-badge role-turn">TURN</span>');
+
+                        return `<tr><td>${p.seatNo}${meTag}</td><td>${p.nickname} ${roleTags.join("")}</td><td>${p.stack}</td><td>${p.contribution}</td><td>${p.totalContribution ?? "-"}</td><td>${p.isFolded}</td><td>${p.isReady}</td></tr>`;
                     })
                     .join("");
 
-                playerListEl.innerHTML = `<table class="player-table"><thead><tr><th>좌석</th><th>닉네임</th><th>스택</th><th>기여</th><th>폴드</th><th>READY</th></tr></thead><tbody>${rows}</tbody></table>`;
+                playerListEl.innerHTML = `<table class="player-table"><thead><tr><th>좌석</th><th>닉네임/역할</th><th>스택</th><th>현재기여</th><th>총기여</th><th>폴드</th><th>READY</th></tr></thead><tbody>${rows}</tbody></table>`;
             } else {
                 playerListEl.textContent = "플레이어 없음";
             }
@@ -700,35 +806,81 @@
             appendLog("emit hand:action", { actionType: "fold" });
         });
 
+        document.getElementById("btn-raise").addEventListener("click", () => {
+            if (!socket || !socket.connected) {
+                appendLog("warn", { message: "먼저 연결하세요." });
+                return;
+            }
+
+            const amount = Number(inputRaiseAmount.value);
+            if (!Number.isInteger(amount) || amount <= 0) {
+                appendLog("warn", { message: "올바른 레이즈 금액을 입력하세요." });
+                return;
+            }
+
+            socket.emit("hand:action", { actionType: "raise", amount });
+            appendLog("emit hand:action", { actionType: "raise", amount });
+        });
+
         document.getElementById("btn-open-u1").addEventListener("click", () => {
-            const params = {
-                server: inputServerUrl.value.trim(),
-                table: inputTableId.value.trim(),
-                user: "u1",
-                nick: "player1",
-                autoconnect: "1",
-                autojoin: "1",
-                autoready: "1",
-                autoplay: chkAutoPlayEl.checked ? "1" : "0",
-            };
-            const url = `${window.location.pathname}?${paramsToQueryString(params)}`;
-            window.open(url, "_blank");
+            openPresetTab("u1", "player1");
         });
 
         document.getElementById("btn-open-u2").addEventListener("click", () => {
-            const params = {
-                server: inputServerUrl.value.trim(),
-                table: inputTableId.value.trim(),
-                user: "u2",
-                nick: "player2",
-                autoconnect: "1",
-                autojoin: "1",
-                autoready: "1",
-                autoplay: chkAutoPlayEl.checked ? "1" : "0",
-            };
-            const url = `${window.location.pathname}?${paramsToQueryString(params)}`;
-            window.open(url, "_blank");
+            openPresetTab("u2", "player2");
         });
+
+        document.getElementById("btn-open-u3").addEventListener("click", () => {
+            openPresetTab("u3", "player3");
+        });
+
+        document.getElementById("btn-open-u4").addEventListener("click", () => {
+            openPresetTab("u4", "player4");
+        });
+
+        document.getElementById("btn-open-4p").addEventListener("click", () => {
+            hidePopupHelp();
+
+            const presets = [
+                { user: "u1", nick: "player1" },
+                { user: "u2", nick: "player2" },
+                { user: "u3", nick: "player3" },
+                { user: "u4", nick: "player4" },
+            ];
+
+            const blockedItems = [];
+            for (const preset of presets) {
+                const url = buildPresetUrl(preset.user, preset.nick);
+                const opened = window.open(url, "_blank");
+                if (!opened) {
+                    blockedItems.push({ ...preset, url });
+                }
+            }
+
+            if (blockedItems.length > 0) {
+                showPopupHelp(blockedItems);
+                appendLog("warn", {
+                    message: "팝업 차단으로 일부 탭이 열리지 않았습니다. 링크를 수동으로 열거나 팝업 허용 후 다시 시도하세요.",
+                    blockedCount: blockedItems.length,
+                    blockedUsers: blockedItems.map((item) => item.user),
+                });
+            }
+        });
+
+        function openPresetTab(user, nick) {
+            hidePopupHelp();
+            const url = buildPresetUrl(user, nick);
+            const opened = window.open(url, "_blank");
+
+            if (!opened) {
+                showPopupHelp([{ user, nick, url }]);
+                appendLog("warn", {
+                    message: "팝업 차단으로 탭 열기에 실패했습니다. 브라우저에서 팝업 허용이 필요합니다.",
+                    user,
+                    url,
+                });
+            }
+        }
 
         document.getElementById("btn-copy-url").addEventListener("click", async () => {
             const params = {
@@ -752,7 +904,7 @@
         });
 
         appendLog("ready", {
-            message: "서버 실행 후 연결 버튼을 누르세요. 탭 2개를 열어 u1/u2로 테스트하면 됩니다.",
+            message: "서버 실행 후 4인 테스트 탭 열기 버튼으로 u1~u4를 열고, BTN/SB/BB/턴/사이드팟 변화를 확인하세요.",
         });
         renderEventCounters();
         applyQueryParams();
