@@ -3,6 +3,7 @@ import { createDeck, shuffleDeck } from "./deck";
 import {
   ActionType,
   AutoActionType,
+  BlindLevelConfig,
   Card,
   HandActionInput,
   HandState,
@@ -14,7 +15,60 @@ import {
   TableState,
 } from "./types";
 
-const MIN_PLAYERS_TO_START_HAND = 4;
+const MIN_PLAYERS_TO_START_HAND = 2;
+const MIN_TIMEOUT_MS = 1000;
+const MAX_TIMEOUT_MS = 60000;
+const MIN_BLIND = 1;
+const MAX_BLIND = 100000;
+const MIN_LEVEL_DURATION_MINUTES = 1;
+const MAX_LEVEL_DURATION_MINUTES = 1440;
+
+function cloneBlindLevels(levels: BlindLevelConfig[]): BlindLevelConfig[] {
+  return levels.map((level) => ({ ...level }));
+}
+
+function normalizeBlindLevel(level: BlindLevelConfig): BlindLevelConfig {
+  if (!Number.isInteger(level.smallBlind) || level.smallBlind < MIN_BLIND || level.smallBlind > MAX_BLIND) {
+    throw new Error(`smallBlind must be an integer between ${MIN_BLIND} and ${MAX_BLIND}`);
+  }
+  if (!Number.isInteger(level.bigBlind) || level.bigBlind < level.smallBlind || level.bigBlind > MAX_BLIND) {
+    throw new Error(`bigBlind must be an integer between smallBlind and ${MAX_BLIND}`);
+  }
+  if (!Number.isInteger(level.ante) || level.ante < 0 || level.ante > MAX_BLIND) {
+    throw new Error(`ante must be an integer between 0 and ${MAX_BLIND}`);
+  }
+  if (
+    !Number.isInteger(level.durationMinutes) ||
+    level.durationMinutes < MIN_LEVEL_DURATION_MINUTES ||
+    level.durationMinutes > MAX_LEVEL_DURATION_MINUTES
+  ) {
+    throw new Error(`durationMinutes must be an integer between ${MIN_LEVEL_DURATION_MINUTES} and ${MAX_LEVEL_DURATION_MINUTES}`);
+  }
+
+  return {
+    smallBlind: level.smallBlind,
+    bigBlind: level.bigBlind,
+    ante: level.ante,
+    durationMinutes: level.durationMinutes,
+  };
+}
+
+function normalizeBlindLevels(levels: BlindLevelConfig[]): BlindLevelConfig[] {
+  if (!Array.isArray(levels) || levels.length === 0) {
+    throw new Error("blindLevels must contain at least one level");
+  }
+
+  return levels.map(normalizeBlindLevel);
+}
+
+function getBlindLevel(levels: BlindLevelConfig[], index: number): BlindLevelConfig {
+  const level = levels[index];
+  if (!level) {
+    throw new Error(`Blind level not found at index ${index}`);
+  }
+
+  return level;
+}
 
 interface ActionApplyResult {
   table: TableState;
@@ -109,10 +163,18 @@ function nextStreet(street: Street): Street | null {
   }
 }
 
-function computeSidePots(players: PlayerState[]): SidePot[] {
+function computeSidePots(players: PlayerState[], deadMoney: number = 0): SidePot[] {
   const handPlayers = getHandPlayers(players).filter((player) => player.totalContribution > 0);
   if (handPlayers.length === 0) {
-    return [];
+    if (deadMoney <= 0) {
+      return [];
+    }
+
+    const eligibleSeatNos = getActiveHandPlayers(players)
+      .map((player) => player.seatNo)
+      .sort((a, b) => a - b);
+
+    return eligibleSeatNos.length > 0 ? [{ amount: deadMoney, eligibleSeatNos }] : [];
   }
 
   const levels = Array.from(new Set(handPlayers.map((player) => player.totalContribution))).sort(
@@ -139,6 +201,10 @@ function computeSidePots(players: PlayerState[]): SidePot[] {
     previousLevel = level;
   }
 
+  if (deadMoney > 0) {
+    sidePots[0].amount += deadMoney;
+  }
+
   return sidePots;
 }
 
@@ -146,13 +212,23 @@ export class TableManager {
   private readonly tables = new Map<string, TableState>();
 
   constructor() {
+    const defaultBlindLevels = normalizeBlindLevels([
+      { smallBlind: 10, bigBlind: 20, ante: 0, durationMinutes: 5 },
+    ]);
+
     this.tables.set("default", {
       tableId: "default",
       maxPlayers: 6,
-      smallBlind: 10,
-      bigBlind: 20,
+      smallBlind: defaultBlindLevels[0].smallBlind,
+      bigBlind: defaultBlindLevels[0].bigBlind,
+      blindLevels: cloneBlindLevels(defaultBlindLevels),
+      pendingBlindLevels: cloneBlindLevels(defaultBlindLevels),
+      blindLevelIndex: 0,
+      blindLevelStartedAt: null,
+      blindLevelEndsAt: null,
       buttonSeatNo: null,
-      actionTimeoutMs: 120000,
+      hostUserId: null,
+      actionTimeoutMs: 12000,
       players: [],
       hand: null,
     });
@@ -165,6 +241,9 @@ export class TableManager {
     if (existing) {
       existing.socketId = socketId;
       existing.nickname = nickname;
+      if (!table.hostUserId) {
+        table.hostUserId = userId;
+      }
       return table;
     }
 
@@ -197,13 +276,20 @@ export class TableManager {
     });
 
     table.players.sort((a, b) => a.seatNo - b.seatNo);
+    if (!table.hostUserId) {
+      table.hostUserId = userId;
+    }
     return table;
   }
 
   leave(tableId: string, userId: string): TableState {
     const table = this.getTable(tableId);
     table.players = table.players.filter((p) => p.userId !== userId);
-    if (table.players.length < MIN_PLAYERS_TO_START_HAND) {
+    if (table.hostUserId === userId) {
+      table.hostUserId = table.players[0]?.userId ?? null;
+    }
+
+    if (table.players.filter((p) => p.stack > 0).length < MIN_PLAYERS_TO_START_HAND) {
       table.hand = null;
     }
     return table;
@@ -218,11 +304,67 @@ export class TableManager {
 
     player.isReady = true;
 
-    const readyPlayers = table.players.filter((p) => p.isReady);
-    if (!table.hand && readyPlayers.length >= MIN_PLAYERS_TO_START_HAND) {
-      this.startHand(table);
+    return table;
+  }
+
+  startHandByHost(tableId: string, userId: string): TableState {
+    const table = this.getTable(tableId);
+    this.assertHost(table, userId);
+
+    if (table.hand) {
+      throw new Error("Hand is already active");
     }
 
+    this.startHand(table);
+    return table;
+  }
+
+  updateTableSettings(
+    tableId: string,
+    userId: string,
+    settings: { actionTimeoutMs?: number; blindLevels?: BlindLevelConfig[] }
+  ): TableState {
+    const table = this.getTable(tableId);
+    this.assertHost(table, userId);
+
+    if (settings.actionTimeoutMs !== undefined) {
+      const actionTimeoutMs = settings.actionTimeoutMs;
+      if (!Number.isInteger(actionTimeoutMs) || actionTimeoutMs < MIN_TIMEOUT_MS || actionTimeoutMs > MAX_TIMEOUT_MS) {
+        throw new Error(`actionTimeoutMs must be an integer between ${MIN_TIMEOUT_MS} and ${MAX_TIMEOUT_MS}`);
+      }
+
+      table.actionTimeoutMs = actionTimeoutMs;
+      if (table.hand) {
+        table.hand.actionTimeoutMs = actionTimeoutMs;
+        table.hand.actionDeadlineAt = table.hand.currentTurnSeatNo === null ? null : Date.now() + actionTimeoutMs;
+      }
+    }
+
+    if (settings.blindLevels !== undefined) {
+      const normalized = normalizeBlindLevels(settings.blindLevels);
+      table.pendingBlindLevels = cloneBlindLevels(normalized);
+      if (!table.hand) {
+        table.blindLevels = cloneBlindLevels(normalized);
+        table.blindLevelIndex = 0;
+        table.blindLevelStartedAt = null;
+        table.blindLevelEndsAt = null;
+        this.applyBlindLevelToTable(table, 0, Date.now());
+      }
+    }
+
+    return table;
+  }
+
+  transferHost(tableId: string, userId: string, targetUserId: string): TableState {
+    const table = this.getTable(tableId);
+    this.assertHost(table, userId);
+
+    const target = table.players.find((player) => player.userId === targetUserId);
+    if (!target) {
+      throw new Error("Target player not found");
+    }
+
+    table.hostUserId = targetUserId;
     return table;
   }
 
@@ -233,6 +375,8 @@ export class TableManager {
 
   processTimeoutActions(nowMs: number): TimeoutActionResult[] {
     const results: TimeoutActionResult[] = [];
+
+    this.advanceBlindLevels(nowMs);
 
     for (const table of this.tables.values()) {
       const hand = table.hand;
@@ -269,7 +413,13 @@ export class TableManager {
       maxPlayers: table.maxPlayers,
       smallBlind: table.smallBlind,
       bigBlind: table.bigBlind,
+      blindLevels: cloneBlindLevels(table.blindLevels),
+      pendingBlindLevels: cloneBlindLevels(table.pendingBlindLevels),
+      blindLevelIndex: table.blindLevelIndex,
+      blindLevelStartedAt: table.blindLevelStartedAt,
+      blindLevelEndsAt: table.blindLevelEndsAt,
       buttonSeatNo: table.buttonSeatNo,
+      hostUserId: table.hostUserId,
       players: table.players.map((p) => ({
         userId: p.userId,
         nickname: p.nickname,
@@ -277,6 +427,7 @@ export class TableManager {
         stack: p.stack,
         isReady: p.isReady,
         isFolded: p.isFolded,
+        isHost: p.userId === table.hostUserId,
         contribution: p.contribution,
         totalContribution: p.totalContribution,
         holeCardsCount: p.holeCards.length,
@@ -288,6 +439,10 @@ export class TableManager {
             dealerSeatNo: table.hand.dealerSeatNo,
             smallBlindSeatNo: table.hand.smallBlindSeatNo,
             bigBlindSeatNo: table.hand.bigBlindSeatNo,
+            blindLevelIndex: table.hand.blindLevelIndex,
+            smallBlind: table.hand.smallBlind,
+            bigBlind: table.hand.bigBlind,
+            ante: table.hand.ante,
             communityCards: table.hand.communityCards,
             pot: table.hand.pot,
             currentBet: table.hand.currentBet,
@@ -413,7 +568,7 @@ export class TableManager {
       throw new Error("Unsupported action");
     }
 
-    hand.sidePots = computeSidePots(table.players);
+    hand.sidePots = computeSidePots(table.players, hand.ante);
 
     const activePlayers = getActiveHandPlayers(table.players);
     if (activePlayers.length === 1) {
@@ -484,13 +639,25 @@ export class TableManager {
     return table;
   }
 
+  private assertHost(table: TableState, userId: string): void {
+    if (table.hostUserId !== userId) {
+      throw new Error("Only the host can perform this action");
+    }
+  }
+
   private startHand(table: TableState): void {
-    const readyPlayers = table.players.filter((p) => p.isReady).sort((a, b) => a.seatNo - b.seatNo);
-    if (readyPlayers.length < MIN_PLAYERS_TO_START_HAND) {
+    const activePlayers = table.players.filter((player) => player.stack > 0).sort((a, b) => a.seatNo - b.seatNo);
+    if (activePlayers.length < MIN_PLAYERS_TO_START_HAND) {
       return;
     }
 
-    const dealerSeatNo = resolveNextButtonSeat(readyPlayers, table.buttonSeatNo);
+    this.applyPendingBlindLevels(table);
+    this.advanceBlindLevels(Date.now(), table);
+    const activeBlindLevel = getBlindLevel(table.blindLevels, table.blindLevelIndex);
+    table.smallBlind = activeBlindLevel.smallBlind;
+    table.bigBlind = activeBlindLevel.bigBlind;
+
+    const dealerSeatNo = resolveNextButtonSeat(activePlayers, table.buttonSeatNo);
     table.buttonSeatNo = dealerSeatNo;
 
     const deck = shuffleDeck(createDeck());
@@ -502,7 +669,7 @@ export class TableManager {
       player.totalContribution = 0;
       player.holeCards = [];
 
-      if (player.isReady) {
+      if (player.stack > 0) {
         const first = deck.shift();
         const second = deck.shift();
         if (!first || !second) {
@@ -513,20 +680,20 @@ export class TableManager {
     }
 
     const smallBlindSeatNo =
-      readyPlayers.length === 2
+      activePlayers.length === 2
         ? dealerSeatNo
-        : findNextSeatNoInCandidates(readyPlayers, dealerSeatNo);
+        : findNextSeatNoInCandidates(activePlayers, dealerSeatNo);
     if (smallBlindSeatNo === null) {
       throw new Error("Cannot determine small blind seat");
     }
 
-    const bigBlindSeatNo = findNextSeatNoInCandidates(readyPlayers, smallBlindSeatNo);
+    const bigBlindSeatNo = findNextSeatNoInCandidates(activePlayers, smallBlindSeatNo);
     if (bigBlindSeatNo === null) {
       throw new Error("Cannot determine big blind seat");
     }
 
-    const smallBlindPlayer = readyPlayers.find((player) => player.seatNo === smallBlindSeatNo);
-    const bigBlindPlayer = readyPlayers.find((player) => player.seatNo === bigBlindSeatNo);
+    const smallBlindPlayer = activePlayers.find((player) => player.seatNo === smallBlindSeatNo);
+    const bigBlindPlayer = activePlayers.find((player) => player.seatNo === bigBlindSeatNo);
     if (!smallBlindPlayer || !bigBlindPlayer) {
       throw new Error("Blind player not found");
     }
@@ -537,6 +704,10 @@ export class TableManager {
       dealerSeatNo,
       smallBlindSeatNo,
       bigBlindSeatNo,
+      blindLevelIndex: table.blindLevelIndex,
+      smallBlind: table.smallBlind,
+      bigBlind: table.bigBlind,
+      ante: activeBlindLevel.ante,
       deck,
       communityCards: [],
       pot: 0,
@@ -550,13 +721,17 @@ export class TableManager {
 
     table.hand = hand;
 
+    if (hand.ante > 0) {
+      this.postBlindAnte(table, bigBlindPlayer, hand.ante);
+    }
+
     const postedSb = this.postWager(table, smallBlindPlayer, table.smallBlind);
     const postedBb = this.postWager(table, bigBlindPlayer, table.bigBlind);
 
     hand.currentBet = Math.max(postedSb, postedBb);
-    hand.sidePots = computeSidePots(table.players);
+    hand.sidePots = computeSidePots(table.players, hand.ante);
 
-    const preflopFromSeatNo = readyPlayers.length === 2 ? dealerSeatNo : bigBlindSeatNo;
+    const preflopFromSeatNo = activePlayers.length === 2 ? dealerSeatNo : bigBlindSeatNo;
     const firstTurnSeatNo = findNextTurnSeat(table.players, preflopFromSeatNo);
     this.setTurnWithDeadline(table, firstTurnSeatNo);
   }
@@ -574,6 +749,22 @@ export class TableManager {
     player.stack -= paid;
     player.contribution += paid;
     player.totalContribution += paid;
+    table.hand.pot += paid;
+
+    return paid;
+  }
+
+  private postBlindAnte(table: TableState, player: PlayerState, amount: number): number {
+    if (!table.hand || amount <= 0) {
+      return 0;
+    }
+
+    const paid = Math.min(amount, player.stack);
+    if (paid <= 0) {
+      return 0;
+    }
+
+    player.stack -= paid;
     table.hand.pot += paid;
 
     return paid;
@@ -617,7 +808,7 @@ export class TableManager {
     const firstTurnSeatNo = findNextTurnSeat(table.players, table.hand.dealerSeatNo);
     this.setTurnWithDeadline(table, firstTurnSeatNo ?? null);
 
-    table.hand.sidePots = computeSidePots(table.players);
+    table.hand.sidePots = computeSidePots(table.players, table.hand.ante);
     return true;
   }
 
@@ -675,5 +866,53 @@ export class TableManager {
       player.totalContribution = 0;
       player.holeCards = [];
     }
+
+    if (table.players.filter((player) => player.stack > 0).length >= MIN_PLAYERS_TO_START_HAND) {
+      this.startHand(table);
+    }
+  }
+
+  private applyPendingBlindLevels(table: TableState): void {
+    table.blindLevels = cloneBlindLevels(table.pendingBlindLevels);
+  }
+
+  private advanceBlindLevels(nowMs: number, table?: TableState): void {
+    const tables = table ? [table] : Array.from(this.tables.values());
+
+    for (const currentTable of tables) {
+      if (currentTable.blindLevels.length === 0) {
+        continue;
+      }
+
+      if (currentTable.blindLevelStartedAt === null || currentTable.blindLevelEndsAt === null) {
+        this.applyBlindLevelToTable(currentTable, currentTable.blindLevelIndex, nowMs);
+        continue;
+      }
+
+      while (
+        currentTable.blindLevelEndsAt !== null &&
+        nowMs >= currentTable.blindLevelEndsAt &&
+        currentTable.blindLevelIndex < currentTable.blindLevels.length - 1
+      ) {
+        this.applyBlindLevelToTable(currentTable, currentTable.blindLevelIndex + 1, currentTable.blindLevelEndsAt);
+      }
+
+      if (
+        currentTable.blindLevelEndsAt !== null &&
+        nowMs >= currentTable.blindLevelEndsAt &&
+        currentTable.blindLevelIndex === currentTable.blindLevels.length - 1
+      ) {
+        currentTable.blindLevelEndsAt = null;
+      }
+    }
+  }
+
+  private applyBlindLevelToTable(table: TableState, blindLevelIndex: number, nowMs: number): void {
+    const blindLevel = getBlindLevel(table.blindLevels, blindLevelIndex);
+    table.blindLevelIndex = blindLevelIndex;
+    table.smallBlind = blindLevel.smallBlind;
+    table.bigBlind = blindLevel.bigBlind;
+    table.blindLevelStartedAt = nowMs;
+    table.blindLevelEndsAt = blindLevel.durationMinutes > 0 ? nowMs + blindLevel.durationMinutes * 60 * 1000 : null;
   }
 }

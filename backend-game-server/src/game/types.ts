@@ -33,12 +33,23 @@ export interface SidePot {
   eligibleSeatNos: number[];
 }
 
+export interface BlindLevelConfig {
+  smallBlind: number;
+  bigBlind: number;
+  ante: number;
+  durationMinutes: number;
+}
+
 export interface HandState {
   handId: string;
   street: Street;
   dealerSeatNo: number;
   smallBlindSeatNo: number;
   bigBlindSeatNo: number;
+  blindLevelIndex: number;
+  smallBlind: number;
+  bigBlind: number;
+  ante: number;
   deck: Card[];
   communityCards: Card[];
   pot: number;
@@ -55,7 +66,13 @@ export interface TableState {
   maxPlayers: number;
   smallBlind: number;
   bigBlind: number;
+  blindLevels: BlindLevelConfig[];
+  pendingBlindLevels: BlindLevelConfig[];
+  blindLevelIndex: number;
+  blindLevelStartedAt: number | null;
+  blindLevelEndsAt: number | null;
   buttonSeatNo: number | null;
+  hostUserId: string | null;
   actionTimeoutMs: number;
   players: PlayerState[];
   hand: HandState | null;
@@ -68,6 +85,7 @@ export interface PublicPlayerState {
   stack: number;
   isReady: boolean;
   isFolded: boolean;
+  isHost: boolean;
   contribution: number;
   totalContribution: number;
   holeCardsCount: number;
@@ -79,6 +97,10 @@ export interface PublicHandState {
   dealerSeatNo: number;
   smallBlindSeatNo: number;
   bigBlindSeatNo: number;
+  blindLevelIndex: number;
+  smallBlind: number;
+  bigBlind: number;
+  ante: number;
   communityCards: Card[];
   pot: number;
   currentBet: number;
@@ -94,7 +116,13 @@ export interface PublicTableState {
   maxPlayers: number;
   smallBlind: number;
   bigBlind: number;
+  blindLevels: BlindLevelConfig[];
+  pendingBlindLevels: BlindLevelConfig[];
+  blindLevelIndex: number;
+  blindLevelStartedAt: number | null;
+  blindLevelEndsAt: number | null;
   buttonSeatNo: number | null;
+  hostUserId: string | null;
   players: PublicPlayerState[];
   hand: PublicHandState | null;
 }

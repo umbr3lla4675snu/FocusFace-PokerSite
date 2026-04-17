@@ -222,6 +222,7 @@
         .role-sb { background-color: #16a085; }
         .role-bb { background-color: #e67e22; }
         .role-turn { background-color: #c0392b; }
+        .role-host { background-color: #2980b9; }
 
         .raw-json {
             max-height: 170px;
@@ -233,6 +234,41 @@
             border: 1px solid #3d4f62;
             border-radius: 8px;
             padding: 8px;
+            box-sizing: border-box;
+        }
+
+        .settings-pane {
+            display: none;
+            background-color: #0f1720;
+            border: 1px solid #52657a;
+            border-radius: 10px;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+
+        .settings-pane.open {
+            display: block;
+        }
+
+        .levels {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            margin-top: 8px;
+        }
+
+        .levels th,
+        .levels td {
+            border-bottom: 1px solid #2f4356;
+            padding: 6px 4px;
+            text-align: left;
+            vertical-align: middle;
+        }
+
+        .levels input,
+        .levels select {
+            min-width: 80px;
+            width: 100%;
             box-sizing: border-box;
         }
 
@@ -319,6 +355,38 @@
         </div>
 
         <div class="row">
+            <button id="btn-toggle-settings" class="secondary">설정 패널 열기</button>
+        </div>
+
+        <div id="settings-pane" class="settings-pane">
+            <div class="row">
+                <button id="btn-start-hand">게임 시작</button>
+                <input id="timeout-seconds" type="number" min="1" max="60" step="1" value="12" style="max-width: 150px;" placeholder="타임아웃(초)">
+                <button id="btn-set-timeout" class="secondary">타임아웃 적용</button>
+                <select id="host-target-user-id" style="max-width: 220px;"></select>
+                <button id="btn-transfer-host" class="secondary">방장 변경</button>
+            </div>
+            <div class="row">
+                <button id="btn-add-level" class="secondary">레벨 추가</button>
+                <button id="btn-set-levels">레벨 적용</button>
+                <button id="btn-reset-levels" class="secondary">서버값으로 되돌리기</button>
+            </div>
+            <table class="levels">
+                <thead>
+                    <tr>
+                        <th style="width: 50px;">#</th>
+                        <th>SB</th>
+                        <th>BB</th>
+                        <th>ANTE</th>
+                        <th>Duration(분)</th>
+                        <th style="width: 90px;">작업</th>
+                    </tr>
+                </thead>
+                <tbody id="blind-level-rows"></tbody>
+            </table>
+        </div>
+
+        <div class="row">
             <button id="btn-open-u1" class="secondary">테스트 탭 열기 (u1)</button>
             <button id="btn-open-u2" class="secondary">테스트 탭 열기 (u2)</button>
             <button id="btn-open-u3" class="secondary">테스트 탭 열기 (u3)</button>
@@ -335,8 +403,8 @@
         </div>
 
         <div class="quick-guide">
-            빠른 4인 테스트: 4인 테스트 탭 열기 버튼을 누르고 각 탭이 자동 READY 되게 하세요.
-            table:state에서 BTN/SB/BB, 현재 턴, 사이드팟, 타임아웃이 기대대로 바뀌는지 확인하면 됩니다.
+            빠른 테스트: 연결/입장/READY 후 플레이를 진행하세요.
+            방장 설정(게임 시작, 타임아웃, 블라인드 레벨, 방장 변경)은 설정 패널 열기 버튼으로 같은 탭에서 관리할 수 있습니다.
         </div>
 
         <div id="popup-help" class="popup-help"></div>
@@ -348,6 +416,7 @@
                 <h4>핸드 상태</h4>
                 <div class="tiny" id="hand-summary">스트리트: - | 팟: - | 현재 베팅: - | 현재 턴: -</div>
                 <div class="tiny" id="action-order-summary">액션 순서 기준: -</div>
+                <div class="tiny" id="host-summary">호스트: -</div>
                 <div class="tiny" id="my-summary">내 좌석: - | 내 스택: -</div>
                 <div class="tiny" id="sidepot-summary">사이드팟: -</div>
             </div>
@@ -374,6 +443,7 @@
         let socket = null;
         let mySeatNo = null;
         let lastAutoActionKey = "";
+        let connectedUserId = null;
 
         const cardEls = [
             document.getElementById("my-card-1"),
@@ -385,6 +455,7 @@
         const logEl = document.getElementById("log");
         const handSummaryEl = document.getElementById("hand-summary");
         const actionOrderSummaryEl = document.getElementById("action-order-summary");
+        const hostSummaryEl = document.getElementById("host-summary");
         const mySummaryEl = document.getElementById("my-summary");
         const sidepotSummaryEl = document.getElementById("sidepot-summary");
         const eventCountersEl = document.getElementById("event-counters");
@@ -400,12 +471,21 @@
         const inputUserId = document.getElementById("user-id");
         const inputNickname = document.getElementById("nickname");
         const inputRaiseAmount = document.getElementById("raise-amount");
+        const inputTimeoutSeconds = document.getElementById("timeout-seconds");
+        const selectHostTarget = document.getElementById("host-target-user-id");
+        const levelsTbodyEl = document.getElementById("blind-level-rows");
+        const settingsPaneEl = document.getElementById("settings-pane");
 
         const eventCount = {};
         let lastTableState = null;
+        let localLevelsDirty = false;
 
         function paramsToQueryString(params) {
             return new URLSearchParams(params).toString();
+        }
+
+        function getEffectiveUserId() {
+            return connectedUserId || inputUserId.value.trim();
         }
 
         function buildPresetUrl(user, nick) {
@@ -421,6 +501,83 @@
             };
 
             return `${window.location.pathname}?${paramsToQueryString(params)}`;
+        }
+
+        function buildEmptyLevel() {
+            return { smallBlind: 10, bigBlind: 20, ante: 0, durationMinutes: 5 };
+        }
+
+        function createLevelRow(level, index) {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+                <td>${index + 1}</td>
+                <td><input type="number" min="1" step="1" data-field="smallBlind" value="${level.smallBlind}"></td>
+                <td><input type="number" min="1" step="1" data-field="bigBlind" value="${level.bigBlind}"></td>
+                <td><input type="number" min="0" step="1" data-field="ante" value="${level.ante}"></td>
+                <td><input type="number" min="1" step="1" data-field="durationMinutes" value="${level.durationMinutes}"></td>
+                <td><button class="warn" data-action="remove">삭제</button></td>
+            `;
+            return tr;
+        }
+
+        function renderLevelRows(levels) {
+            levelsTbodyEl.innerHTML = "";
+            levels.forEach((level, idx) => {
+                levelsTbodyEl.appendChild(createLevelRow(level, idx));
+            });
+        }
+
+        function collectLevelsFromForm() {
+            const rows = Array.from(levelsTbodyEl.querySelectorAll("tr"));
+            const levels = rows.map((row) => {
+                const read = (field) => Number(row.querySelector(`input[data-field='${field}']`).value);
+                return {
+                    smallBlind: read("smallBlind"),
+                    bigBlind: read("bigBlind"),
+                    ante: read("ante"),
+                    durationMinutes: read("durationMinutes"),
+                };
+            });
+
+            if (levels.length === 0) {
+                throw new Error("레벨은 최소 1개 이상 필요합니다.");
+            }
+
+            for (const level of levels) {
+                if (!Number.isInteger(level.smallBlind) || level.smallBlind < 1) {
+                    throw new Error("smallBlind는 1 이상 정수여야 합니다.");
+                }
+                if (!Number.isInteger(level.bigBlind) || level.bigBlind < level.smallBlind) {
+                    throw new Error("bigBlind는 smallBlind 이상 정수여야 합니다.");
+                }
+                if (!Number.isInteger(level.ante) || level.ante < 0) {
+                    throw new Error("ante는 0 이상 정수여야 합니다.");
+                }
+                if (!Number.isInteger(level.durationMinutes) || level.durationMinutes < 1) {
+                    throw new Error("durationMinutes는 1 이상 정수(분)여야 합니다.");
+                }
+            }
+
+            return levels;
+        }
+
+        function renderHostCandidates(state) {
+            const prev = selectHostTarget.value;
+            const players = Array.isArray(state.players) ? state.players : [];
+            selectHostTarget.innerHTML = "";
+
+            players
+                .filter((p) => p.userId !== state.hostUserId)
+                .forEach((p) => {
+                    const opt = document.createElement("option");
+                    opt.value = p.userId;
+                    opt.textContent = `${p.nickname} (${p.userId})`;
+                    selectHostTarget.appendChild(opt);
+                });
+
+            if (prev && Array.from(selectHostTarget.options).some((o) => o.value === prev)) {
+                selectHostTarget.value = prev;
+            }
         }
 
         function hidePopupHelp() {
@@ -487,6 +644,27 @@
                     }
                 }, 250);
             }
+        }
+
+        function updateHostControls(state) {
+            const effectiveUserId = getEffectiveUserId();
+            const me = Array.isArray(state.players)
+                ? state.players.find((p) => p.userId === effectiveUserId)
+                : null;
+            const isHost = Boolean((me && me.isHost) || (effectiveUserId && state.hostUserId === effectiveUserId));
+
+            document.getElementById("btn-start-hand").disabled = !isHost;
+            document.getElementById("btn-set-timeout").disabled = !isHost;
+            document.getElementById("btn-transfer-host").disabled = !isHost;
+            document.getElementById("btn-add-level").disabled = !isHost;
+            document.getElementById("btn-set-levels").disabled = !isHost;
+            document.getElementById("btn-reset-levels").disabled = !isHost;
+            inputTimeoutSeconds.disabled = !isHost;
+            selectHostTarget.disabled = !isHost;
+
+            levelsTbodyEl.querySelectorAll("input, button[data-action='remove']").forEach((el) => {
+                el.disabled = !isHost;
+            });
         }
 
         function suitSymbol(suit) {
@@ -563,7 +741,7 @@
                 return;
             }
 
-            const me = state.players.find((p) => p.userId === inputUserId.value.trim());
+            const me = state.players.find((p) => p.userId === getEffectiveUserId());
             if (!me || me.isFolded || me.seatNo !== hand.currentTurnSeatNo) {
                 return;
             }
@@ -592,8 +770,9 @@
             lastTableState = state;
             rawStateEl.textContent = JSON.stringify(state, null, 2);
 
+            const effectiveUserId = getEffectiveUserId();
             const me = Array.isArray(state.players)
-                ? state.players.find((p) => p.userId === inputUserId.value.trim())
+                ? state.players.find((p) => p.userId === effectiveUserId)
                 : null;
 
             if (me) {
@@ -607,14 +786,34 @@
             const deadlineText = hand && hand.actionDeadlineAt
                 ? Math.max(0, Math.ceil((hand.actionDeadlineAt - Date.now()) / 1000)) + "s"
                 : "-";
-            const timeoutMsText = hand && hand.actionTimeoutMs ? `${hand.actionTimeoutMs}ms` : "-";
+            const timeoutSecondsText = hand && hand.actionTimeoutMs ? `${Math.round(hand.actionTimeoutMs / 1000)}s` : "-";
+            const activeLevel = hand
+                ? { smallBlind: hand.smallBlind, bigBlind: hand.bigBlind, ante: hand.ante, index: hand.blindLevelIndex }
+                : { smallBlind: state.smallBlind, bigBlind: state.bigBlind, ante: 0, index: state.blindLevelIndex };
+            const nextLevel = Array.isArray(state.blindLevels) && state.blindLevels[state.blindLevelIndex + 1]
+                ? state.blindLevels[state.blindLevelIndex + 1]
+                : null;
             const buttonText = state.buttonSeatNo ?? "-";
+            const hostText = state.hostUserId ?? "-";
             const dealerText = hand && hand.dealerSeatNo ? hand.dealerSeatNo : "-";
             const sbText = hand && hand.smallBlindSeatNo ? hand.smallBlindSeatNo : "-";
             const bbText = hand && hand.bigBlindSeatNo ? hand.bigBlindSeatNo : "-";
+            const levelCountText = Array.isArray(state.blindLevels) ? `${state.blindLevelIndex + 1}/${state.blindLevels.length}` : "-";
             handSummaryEl.textContent = hand
-                ? `스트리트: ${hand.street} | 팟: ${hand.pot} | 현재 베팅: ${hand.currentBet} | 최소 레이즈: ${hand.minRaise} | BTN(table): ${buttonText} | DEALER: ${dealerText} | SB: ${sbText} | BB: ${bbText} | 현재 턴: ${hand.currentTurnSeatNo} | 타임아웃: ${deadlineText} / ${timeoutMsText}`
-                : `스트리트: waiting | 팟: 0 | 현재 베팅: 0 | BTN(table): ${buttonText} | 현재 턴: - | 타임아웃: -`;
+                ? `스트리트: ${hand.street} | 팟: ${hand.pot} | 현재 베팅: ${hand.currentBet} | 최소 레이즈: ${hand.minRaise} | 레벨: ${levelCountText} | 현재 블라인드: ${activeLevel.smallBlind}/${activeLevel.bigBlind}/A${activeLevel.ante} | 다음 레벨: ${nextLevel ? `${nextLevel.smallBlind}/${nextLevel.bigBlind}/A${nextLevel.ante}` : "-"} | BTN(table): ${buttonText} | DEALER: ${dealerText} | SB: ${sbText} | BB: ${bbText} | 현재 턴: ${hand.currentTurnSeatNo} | 타임아웃: ${deadlineText} / ${timeoutSecondsText}`
+                : `스트리트: waiting | 팟: 0 | 현재 베팅: 0 | 레벨: ${levelCountText} | 현재 블라인드: ${activeLevel.smallBlind}/${activeLevel.bigBlind}/A${activeLevel.ante} | 다음 레벨: ${nextLevel ? `${nextLevel.smallBlind}/${nextLevel.bigBlind}/A${nextLevel.ante}` : "-"} | BTN(table): ${buttonText} | 현재 턴: - | 타임아웃: -`;
+
+            hostSummaryEl.textContent = `호스트: ${hostText}`;
+            renderHostCandidates(state);
+
+            const timeoutSec = Math.max(1, Math.round((state.actionTimeoutMs ?? 12000) / 1000));
+            if (document.activeElement !== inputTimeoutSeconds) {
+                inputTimeoutSeconds.value = String(timeoutSec);
+            }
+
+            if (!localLevelsDirty && Array.isArray(state.pendingBlindLevels)) {
+                renderLevelRows(state.pendingBlindLevels);
+            }
 
             actionOrderSummaryEl.textContent = hand
                 ? (hand.street === "preflop"
@@ -633,8 +832,9 @@
             if (Array.isArray(state.players) && state.players.length > 0) {
                 const rows = state.players
                     .map((p) => {
-                        const meTag = p.userId === inputUserId.value.trim() ? "(ME)" : "";
+                        const meTag = p.userId === effectiveUserId ? "(ME)" : "";
                         const roleTags = [];
+                        if (p.isHost) roleTags.push('<span class="role-badge role-host">HOST</span>');
                         if (state.buttonSeatNo === p.seatNo) roleTags.push('<span class="role-badge role-btn">BTN</span>');
                         if (hand && hand.smallBlindSeatNo === p.seatNo) roleTags.push('<span class="role-badge role-sb">SB</span>');
                         if (hand && hand.bigBlindSeatNo === p.seatNo) roleTags.push('<span class="role-badge role-bb">BB</span>');
@@ -664,6 +864,7 @@
                 skip: !chkVerboseStateEl.checked,
             });
 
+            updateHostControls(state);
             maybeAutoPlay(state);
         }
 
@@ -722,6 +923,8 @@
             const serverUrl = inputServerUrl.value.trim();
             const userId = inputUserId.value.trim();
             const nickname = inputNickname.value.trim();
+
+            connectedUserId = userId;
 
             socket = io(serverUrl, {
                 auth: {
@@ -804,6 +1007,135 @@
             }
             socket.emit("hand:action", { actionType: "fold" });
             appendLog("emit hand:action", { actionType: "fold" });
+        });
+
+        document.getElementById("btn-toggle-settings").addEventListener("click", () => {
+            settingsPaneEl.classList.toggle("open");
+            const opened = settingsPaneEl.classList.contains("open");
+            document.getElementById("btn-toggle-settings").textContent = opened ? "설정 패널 닫기" : "설정 패널 열기";
+            appendLog("system", { message: opened ? "설정 패널을 열었습니다." : "설정 패널을 닫았습니다." });
+        });
+
+        document.getElementById("btn-start-hand").addEventListener("click", () => {
+            if (!socket || !socket.connected) {
+                appendLog("warn", { message: "먼저 연결하세요." });
+                return;
+            }
+            socket.emit("table:start", {});
+            appendLog("emit table:start");
+        });
+
+        document.getElementById("btn-set-timeout").addEventListener("click", () => {
+            if (!socket || !socket.connected) {
+                appendLog("warn", { message: "먼저 연결하세요." });
+                return;
+            }
+
+            const timeoutSeconds = Number(inputTimeoutSeconds.value);
+            if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 60) {
+                appendLog("warn", { message: "타임아웃은 1~60초 사이 정수여야 합니다." });
+                return;
+            }
+
+            socket.emit("table:update_settings", { actionTimeoutMs: timeoutSeconds * 1000 });
+            appendLog("emit table:update_settings", { timeoutSeconds });
+        });
+
+        document.getElementById("btn-transfer-host").addEventListener("click", () => {
+            if (!socket || !socket.connected) {
+                appendLog("warn", { message: "먼저 연결하세요." });
+                return;
+            }
+
+            const targetUserId = selectHostTarget.value;
+            if (!targetUserId) {
+                appendLog("warn", { message: "방장 변경 대상이 없습니다." });
+                return;
+            }
+
+            socket.emit("table:transfer_host", { targetUserId });
+            appendLog("emit table:transfer_host", { targetUserId });
+        });
+
+        document.getElementById("btn-add-level").addEventListener("click", () => {
+            let levels;
+            try {
+                levels = collectLevelsFromForm();
+            } catch {
+                levels = [buildEmptyLevel()];
+            }
+
+            const last = levels[levels.length - 1] ?? buildEmptyLevel();
+            levels.push({
+                smallBlind: Math.max(1, last.smallBlind * 2),
+                bigBlind: Math.max(1, last.bigBlind * 2),
+                ante: Math.max(0, last.ante),
+                durationMinutes: Math.max(1, last.durationMinutes),
+            });
+
+            renderLevelRows(levels);
+            localLevelsDirty = true;
+        });
+
+        document.getElementById("btn-reset-levels").addEventListener("click", () => {
+            if (!lastTableState || !Array.isArray(lastTableState.pendingBlindLevels)) {
+                appendLog("warn", { message: "서버에서 받은 레벨 정보가 없습니다." });
+                return;
+            }
+            renderLevelRows(lastTableState.pendingBlindLevels);
+            localLevelsDirty = false;
+            appendLog("reset levels", { count: lastTableState.pendingBlindLevels.length });
+        });
+
+        document.getElementById("btn-set-levels").addEventListener("click", () => {
+            if (!socket || !socket.connected) {
+                appendLog("warn", { message: "먼저 연결하세요." });
+                return;
+            }
+
+            let levels;
+            try {
+                levels = collectLevelsFromForm();
+            } catch (error) {
+                appendLog("warn", { message: error instanceof Error ? error.message : "레벨 입력 오류" });
+                return;
+            }
+
+            socket.emit("table:update_settings", { blindLevels: levels });
+            appendLog("emit table:update_settings", { blindLevels: levels });
+            localLevelsDirty = false;
+        });
+
+        levelsTbodyEl.addEventListener("click", (event) => {
+            const target = event.target;
+            if (!(target instanceof HTMLElement) || target.dataset.action !== "remove") {
+                return;
+            }
+
+            const rows = Array.from(levelsTbodyEl.querySelectorAll("tr"));
+            if (rows.length <= 1) {
+                appendLog("warn", { message: "최소 1개 레벨은 유지해야 합니다." });
+                return;
+            }
+
+            const row = target.closest("tr");
+            if (!row) {
+                return;
+            }
+            row.remove();
+
+            Array.from(levelsTbodyEl.querySelectorAll("tr")).forEach((tr, idx) => {
+                const noCell = tr.querySelector("td");
+                if (noCell) {
+                    noCell.textContent = String(idx + 1);
+                }
+            });
+
+            localLevelsDirty = true;
+        });
+
+        levelsTbodyEl.addEventListener("input", () => {
+            localLevelsDirty = true;
         });
 
         document.getElementById("btn-raise").addEventListener("click", () => {
@@ -904,9 +1236,10 @@
         });
 
         appendLog("ready", {
-            message: "서버 실행 후 4인 테스트 탭 열기 버튼으로 u1~u4를 열고, BTN/SB/BB/턴/사이드팟 변화를 확인하세요.",
+            message: "서버 실행 후 호스트가 타임아웃을 설정하고 게임 시작을 눌러서 테스트하세요.",
         });
         renderEventCounters();
+        renderLevelRows([buildEmptyLevel()]);
         applyQueryParams();
     </script>
 </body>

@@ -1,7 +1,7 @@
 import { Server } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import { TableManager } from "../game/state";
-import { HandActionInput } from "../game/types";
+import { BlindLevelConfig, HandActionInput } from "../game/types";
 import { AuthenticatedSocket } from "./types";
 
 interface InitGatewayInput {
@@ -75,6 +75,72 @@ export function initGateway({ httpServer, corsOrigin, tableManager }: InitGatewa
         socket.emit("error:event", {
           code: "READY_FAILED",
           message: error instanceof Error ? error.message : "Unknown ready error",
+        });
+      }
+    });
+
+    socket.on("table:start", () => {
+      if (!socket.data.tableId) {
+        socket.emit("error:event", { code: "NO_TABLE", message: "Join a table first" });
+        return;
+      }
+
+      try {
+        const table = tableManager.startHandByHost(socket.data.tableId, socket.data.userId);
+        io.to(socket.data.tableId).emit("table:state", tableManager.getPublicTableState(table.tableId));
+
+        for (const player of table.players) {
+          const privateState = tableManager.getPrivateState(table.tableId, player.userId);
+          if (!privateState) {
+            continue;
+          }
+
+          io.to(player.socketId).emit("player:private", privateState);
+        }
+      } catch (error) {
+        socket.emit("error:event", {
+          code: "START_FAILED",
+          message: error instanceof Error ? error.message : "Unknown start error",
+        });
+      }
+    });
+
+    socket.on(
+      "table:update_settings",
+      ({ actionTimeoutMs, blindLevels }: { actionTimeoutMs?: number; blindLevels?: BlindLevelConfig[] }) => {
+        if (!socket.data.tableId) {
+          socket.emit("error:event", { code: "NO_TABLE", message: "Join a table first" });
+          return;
+        }
+
+        try {
+          const table = tableManager.updateTableSettings(socket.data.tableId, socket.data.userId, {
+            actionTimeoutMs,
+            blindLevels,
+          });
+          io.to(socket.data.tableId).emit("table:state", tableManager.getPublicTableState(table.tableId));
+        } catch (error) {
+          socket.emit("error:event", {
+            code: "SETTINGS_FAILED",
+            message: error instanceof Error ? error.message : "Unknown settings error",
+          });
+        }
+      }
+    );
+
+    socket.on("table:transfer_host", ({ targetUserId }: { targetUserId: string }) => {
+      if (!socket.data.tableId) {
+        socket.emit("error:event", { code: "NO_TABLE", message: "Join a table first" });
+        return;
+      }
+
+      try {
+        const table = tableManager.transferHost(socket.data.tableId, socket.data.userId, targetUserId);
+        io.to(socket.data.tableId).emit("table:state", tableManager.getPublicTableState(table.tableId));
+      } catch (error) {
+        socket.emit("error:event", {
+          code: "TRANSFER_HOST_FAILED",
+          message: error instanceof Error ? error.message : "Unknown host transfer error",
         });
       }
     });

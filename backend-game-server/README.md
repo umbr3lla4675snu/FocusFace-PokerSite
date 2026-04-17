@@ -6,9 +6,12 @@ Focus Face Poker 실시간 게임 서버 뼈대 코드입니다.
 
 ## 포함 범위 (현재)
 - Socket.IO 기반 테이블 입장/퇴장
-- Ready 4명 이상일 때 핸드 시작
+- 방장(host) 수동 게임 시작
+- 방장이 타임아웃/블라인드 레벨 설정 가능
+- 방장 변경 가능
+- 메인 화면의 설정 패널(한 탭)에서 방장 설정 관리
 - 액션 처리: fold, check, call, raise(amount)
-- 블라인드 자동 포스팅(SB/BB)
+- 토너먼트형 블라인드 레벨 자동 적용(SB/BB/ANTE(BBA)/DURATION, ANTE는 메인팟 dead money)
 - 버튼 포지션 로테이션
 - 프리플랍/포스트플랍 액션 시작 좌석 규칙(헤즈업/멀티웨이)
 - 스트리트 진행: preflop -> flop -> turn -> river (승패 판정 없이 종료)
@@ -17,7 +20,9 @@ Focus Face Poker 실시간 게임 서버 뼈대 코드입니다.
 - 테이블 상태 브로드캐스트
 - 개인 홀카드 별도 전송(player:private)
 
-## 미포함 범위 (다음 단계)
+## 미포함 범위, 구현 필요
+- 핸드 종료 판정 여부 --> 한명이 올인하고 나머지가 콜했을 때 바로 끝나지 않는다, 종료 판정 로직을 수정해야함
+- 디버깅 html(poker.html)을 조금 수정하자. 다른 플레이어 표시, 현재 포지션도 시각적으로 표시해주는게 좋을듯
 - 인증(JWT)
 - DB 저장(핸드 로그, 액션 로그)
 - 정식 핸드 평가
@@ -37,6 +42,8 @@ npm run dev
 
 서버 기본 포트: 4000
 헬스체크: GET /health
+
+설정 UI: `poker.html`의 설정 패널 열기 버튼으로 같은 탭에서 방장 설정(시작/타임아웃/블라인드 레벨/방장 변경)을 표 형태로 조작할 수 있습니다.
 
 ## 소켓 연결 예시
 
@@ -78,8 +85,23 @@ socket.emit("hand:action", { actionType: "raise", amount: 120 });
 클라이언트 -> 서버
 - table:join { tableId }
 - player:ready {}
+- table:start {}
+- table:update_settings { actionTimeoutMs?, blindLevels? }
+- table:transfer_host { targetUserId }
 - hand:action { actionType: "fold" | "check" | "call" | "raise", amount?: number }
 - table:leave {}
+
+`table:update_settings`에서 `actionTimeoutMs`는 클라이언트 UI 기준 초 단위 입력을 ms로 변환해 보내면 됩니다.
+
+blindLevels 예시:
+
+```json
+[
+  { "smallBlind": 10, "bigBlind": 20, "ante": 0, "durationMinutes": 5 },
+  { "smallBlind": 15, "bigBlind": 30, "ante": 0, "durationMinutes": 5 },
+  { "smallBlind": 25, "bigBlind": 50, "ante": 5, "durationMinutes": 5 }
+]
+```
 
 서버 -> 클라이언트
 - system:connected
